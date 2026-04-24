@@ -12,6 +12,7 @@ fn platform_suffix() -> Result<&'static str> {
         ("macos", "aarch64") => Ok("darwin-arm64"),
         ("macos", "x86_64") => Ok("darwin-amd64"),
         ("linux", "x86_64") => Ok("linux-amd64"),
+        ("windows", "x86_64") => Ok("windows-amd64"),
         (os, arch) => Err(AppError::UpdateError(format!(
             "Unsupported platform: {os}/{arch}"
         ))),
@@ -105,6 +106,36 @@ fn sha256_of(path: &Path) -> Result<String> {
         let out = String::from_utf8_lossy(&output.stdout);
         if let Some(hash) = out.split_whitespace().next() {
             return Ok(hash.to_string());
+        }
+    }
+
+    // Try certutil on Windows (built-in). Output format:
+    //   SHA256 hash of <file>:
+    //   <hex hash, possibly space-separated>
+    //   CertUtil: -hashfile command completed successfully.
+    #[cfg(windows)]
+    {
+        if let Ok(output) = Command::new("certutil")
+            .args(["-hashfile"])
+            .arg(path)
+            .arg("SHA256")
+            .output()
+            && output.status.success()
+        {
+            let out = String::from_utf8_lossy(&output.stdout);
+            // The hash is on the 2nd non-empty line; older Windows versions insert
+            // spaces between byte pairs, so strip whitespace before returning.
+            if let Some(hash_line) = out
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .nth(1)
+            {
+                let hash: String = hash_line.chars().filter(|c| !c.is_whitespace()).collect();
+                if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Ok(hash.to_lowercase());
+                }
+            }
         }
     }
 
@@ -216,10 +247,12 @@ fn do_update(
         .map_err(|e| AppError::UpdateError(format!("Failed to create extract dir: {e}")))?;
     extract_tar(&tar_path, &extract_dir)?;
 
-    let new_binary = extract_dir.join(BIN_NAME);
+    // On Windows the archive ships "claude-history.exe"; elsewhere just "claude-history".
+    let binary_filename = format!("{BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
+    let new_binary = extract_dir.join(&binary_filename);
     if !new_binary.exists() {
         return Err(AppError::UpdateError(format!(
-            "Extracted archive does not contain '{BIN_NAME}' binary"
+            "Extracted archive does not contain '{binary_filename}' binary"
         )));
     }
 

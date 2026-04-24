@@ -30,6 +30,11 @@ jobs:
             target: x86_64-unknown-linux-musl
             platform: linux-amd64
             use_cross: true
+          # Windows build (native cargo on windows-latest)
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-amd64
+            use_cross: false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +48,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Build
+        shell: bash
         run: |
           if [ "${{ matrix.use_cross }}" == "true" ]; then
             cross build --release --locked --target ${{ matrix.target }}
@@ -50,15 +56,27 @@ jobs:
             cargo build --release --locked --target ${{ matrix.target }}
           fi
       - name: Package
+        shell: bash
         run: |
-          bin="target/${{ matrix.target }}/release/${BIN_NAME}"
+          bin_base="target/${{ matrix.target }}/release/${BIN_NAME}"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin="${bin_base}.exe"
+          else
+            bin="${bin_base}"
+          fi
           # Only strip on Linux to avoid corrupting macOS code signatures
           if [[ "${{ runner.os }}" == "Linux" ]]; then
             strip "$bin" || true
           fi
           archive="${BIN_NAME}-${{ matrix.platform }}.tar.gz"
-          tar -C "$(dirname "$bin")" -czf "$archive" ${BIN_NAME}
-          shasum -a 256 "$archive" > "${BIN_NAME}-${{ matrix.platform }}.sha256"
+          tar -C "$(dirname "$bin")" -czf "$archive" "$(basename "$bin")"
+          # shasum (Perl) is reliable on macOS; sha256sum is standard on Linux and
+          # ships via git-bash on the Windows runner.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "${BIN_NAME}-${{ matrix.platform }}.sha256"
+          else
+            shasum -a 256 "$archive" > "${BIN_NAME}-${{ matrix.platform }}.sha256"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}
